@@ -406,6 +406,29 @@ class Group:
         """
         return [stab.basepoint for stab in self.stabilizer_chain()[:-1]]
 
+    def change_base(self, base):
+        """Return a copy of this group using the specified base prefix.
+
+        Right now it'll just rebuild the strong generating set using the
+        specified base prefix. When using the Monte Carlo variant it will use
+        the known order of this group to turn it into a Las Vegas algorithm.
+        """
+
+        # TODO implement base change by conjugation
+
+        # TODO implement Las Vegas base point transposition algorithm
+
+        # TODO only rebuild the affected subrange when rebuilding
+
+        # TODO use heuristic to combine these with the existing implementation
+
+        base_changed = Group(self.cfg, base)
+        for gen in self.generators():
+            base_changed.add_gen(gen[0])
+        base_changed.build(known_order=self.order())
+
+        return base_changed
+
     def make_non_redundand(self):
         """Remove redundant points from the base.
         """
