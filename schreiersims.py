@@ -350,7 +350,7 @@ class Group:
         self.cfg = cfg or Config()
         self.gens = []
         self.gens_complete = True
-        self.base = None
+        self.basepoint = None
 
         self.tree_gens = []
         self.tree_expand = []
@@ -448,16 +448,16 @@ class Group:
     def sift(self, p, trace=None):
         """Perform sifting on p.
 
-        Applies generators to p to fix p[base] = base and if successful
-        recurses in stabilizer subgroup.
+        Applies generators to p to fix p[basepoint] = basepoint and if
+        successful recurses in stabilizer subgroup.
 
         When trace is a list, the applied generators are appended to it.
         """
-        if self.base is None or p is None:
+        if self.basepoint is None or p is None:
             return p
 
         try:
-            p_stab = self.move_to_base(p[self.base], p, trace)
+            p_stab = self.move_to_basepoint(p[self.basepoint], p, trace)
         except NotInOrbit:
             return p
 
@@ -466,20 +466,20 @@ class Group:
     def deep_sift(self, p):
         """Perform deep sifting on p.
 
-        Applies generators to both sides of p to fix p[base] = base and if
-        successful recurses in stabilizer subgroup.
+        Applies generators to both sides of p to fix p[basepoint] = basepoint
+        and if successful recurses in stabilizer subgroup.
         """
 
-        if self.base is None:
+        if self.basepoint is None:
             return p
 
         try:
-            p_stab = self.move_to_base(p[self.base], p)
+            p_stab = self.move_to_basepoint(p[self.basepoint], p)
         except NotInOrbit:
             for a in sorted(self.tree.keys()):
                 if p[a] in self.tree:
-                    p_tmp = inv_perm(self.move_to_base(a, inv_perm(p)))
-                    p_stab = self.move_to_base(p_tmp[self.base], p)
+                    p_tmp = inv_perm(self.move_to_basepoint(a, inv_perm(p)))
+                    p_stab = self.move_to_basepoint(p_tmp[self.basepoint], p)
                     return self.stab.deep_sift(p_stab)
             return p
 
@@ -488,19 +488,19 @@ class Group:
     def order(self):
         """Compute the order of the group.
         """
-        if self.base is None:
+        if self.basepoint is None:
             return 1
         return len(self.tree) * self.stab.order()
 
-    def move_to_base(self, a, p=None, trace=None):
-        """Apply a product q of tree_gens with q[a] == base to p.
+    def move_to_basepoint(self, a, p=None, trace=None):
+        """Apply a product q of tree_gens with q[a] == basepoints to p.
         """
         if a not in self.tree:
-            raise NotInOrbit("a not in base's orbit")
+            raise NotInOrbit("a not in basepoints's orbit")
 
         steps = []
 
-        while a != self.base:
+        while a != self.basepoint:
             edge_i, edge_pol = self.tree[a]
             edge_gen = self.tree_gens[edge_i][edge_pol]
             if trace is not None:
@@ -514,19 +514,19 @@ class Group:
     def add_nonmember_gen(self, gen):
         """Add a generator that is not a member of this group yet.
         """
-        if self.base is None:
+        if self.basepoint is None:
             for i, j in enumerate(gen):
                 if i != j:
-                    self.base = i
+                    self.basepoint = i
                     break
-            if self.base is None:
+            if self.basepoint is None:
                 return
 
             self.stab = Group(self.cfg)
 
         self.gens.append((gen, inv_perm(gen)))
 
-        if gen[self.base] == self.base:
+        if gen[self.basepoint] == self.basepoint:
             # we can add this generator directly to the stabilizer subgroup
             self.stab.add_nonmember_gen(gen)
 
@@ -546,8 +546,8 @@ class Group:
         """
         for gen, inv_gen in self.generators():
             for a in sorted(self.tree.keys()):
-                p = inv_perm(self.move_to_base(a, inv_gen))
-                schreier_gen = self.move_to_base(p[self.base], p)
+                p = inv_perm(self.move_to_basepoint(a, inv_gen))
+                schreier_gen = self.move_to_basepoint(p[self.basepoint], p)
                 self.stab.add_gen(schreier_gen)
 
     def verify_all_schreir_gens(self):
@@ -556,13 +556,13 @@ class Group:
         This is performed recursively down the stabilizer chain.
         Returns True if the strong generating set is complete.
         """
-        if self.base is None:
+        if self.basepoint is None:
             return True
 
         for gen, inv_gen in self.generators():
             for a in sorted(self.tree.keys()):
-                p = inv_perm(self.move_to_base(a, inv_gen))
-                schreier_gen = self.move_to_base(p[self.base], p)
+                p = inv_perm(self.move_to_basepoint(a, inv_gen))
+                schreier_gen = self.move_to_basepoint(p[self.basepoint], p)
                 if not is_id_perm(self.stab.sift(schreier_gen)):
                     return False
 
@@ -579,8 +579,8 @@ class Group:
         for i in range(self.cfg.random_schreier_gens):
             gen, inv_gen = self.cfg.rng.choice(gens)
             a = self.cfg.rng.choice(orbit)
-            p = inv_perm(self.move_to_base(a, inv_gen))
-            schreier_gen = self.move_to_base(p[self.base], p)
+            p = inv_perm(self.move_to_basepoint(a, inv_gen))
+            schreier_gen = self.move_to_basepoint(p[self.basepoint], p)
 
             # We can't use add_gen recursively for the monte carlo variant
             # so we manually sift and check for identity
@@ -590,7 +590,7 @@ class Group:
                 self.add_nonmember_gen(schreier_gen)
 
     def rebuild_schreier_tree(self):
-        """Rebuild the Schreier tree for the orbit containing base.
+        """Rebuild the Schreier tree for the orbit containing basepoint.
         """
 
         self.tree_gens = []
@@ -607,7 +607,7 @@ class Group:
             # we add a new (tree only) generator to reach the element `a`
             # that was too far from the root in a single step.
             trace = []
-            new_gen = self.move_to_base(a, trace=trace)
+            new_gen = self.move_to_basepoint(a, trace=trace)
             assert new_gen is not None
             inv_trace = [inv_perm(g) for g in trace[::-1]]
             self.tree_gens.append((inv_perm(new_gen), new_gen))
@@ -623,8 +623,8 @@ class Group:
         """
         mode = self.cfg.schreier_tree
 
-        self.tree = {self.base: None}
-        queue = [(self.base, 0)]
+        self.tree = {self.basepoint: None}
+        queue = [(self.basepoint, 0)]
 
         while queue:
             a, depth = queue.pop(0)
@@ -651,7 +651,7 @@ class Group:
         self.tree_depth = depth
 
     def split_generators(self):
-        """Split any generator with a non-prime-power sized base orbit.
+        """Split any generator with a non-prime-power sized basepoint orbit.
 
         Was only used for debugging build_block_stabilizer_chain.
 
@@ -666,8 +666,8 @@ class Group:
         new_gens = []
         for g, g_inv in self.gens:
             orbit_size = 0
-            a = g[self.base]
-            while a != self.base:
+            a = g[self.basepoint]
+            while a != self.basepoint:
                 orbit_size += 1
                 a = g[a]
             orbit_factors = {}
@@ -700,7 +700,7 @@ class Group:
         generators. If multiple generators g_1, ..., g_k remain, insert the
         groups <H, g_1>, <H, g_1, g_2>, ... <H, g_1, ..., g_{k-1}>. Each of
         these groups stabilizes a block of the following group. The stabilized
-        block is the orbit of base in the smaller group.
+        block is the orbit of basepoint in the smaller group.
 
         See also Seress' "Permutation Group Algorithms" 8.2. "general case"
 
@@ -720,7 +720,7 @@ class Group:
 
         See build_block_stabilizer_chain for a description.
         """
-        if self.base is None:
+        if self.basepoint is None:
             return
 
         require_rebuild = False
@@ -730,7 +730,7 @@ class Group:
             gen_i, gen_i_inv = self.gens.pop(i)
             self.rebuild_schreier_tree()
             require_rebuild = False
-            if gen_i[self.base] in self.tree:
+            if gen_i[self.basepoint] in self.tree:
                 witness = self.sift(gen_i)
                 if is_id_perm(witness):
                     continue
@@ -751,7 +751,7 @@ class Group:
         for i in range(1, len(self.gens)):
             stab_gens = self.stab.generators() + self.gens[:i]
 
-            queue = [self.base]
+            queue = [self.basepoint]
             block = set(queue)
 
             while queue:
@@ -784,8 +784,8 @@ class Group:
                             if point_to_block[b] != block_b:
                                 block_c = point_to_block[b]
 
-                                # find v in stab so that path_b'[b] v = base
-                                # find w in stab so that path_c'[b] w = base
+                                # find v in stab so that path_b'[b] v = basept
+                                # find w in stab so that path_c'[b] w = basept
                                 # v' path_b path_c' w is a witness
 
                                 path_b = block_paths[block_a] + [g]
@@ -800,8 +800,10 @@ class Group:
                                 self.gens = self.gens[:i]
                                 self.rebuild_schreier_tree()
 
-                                part_b = self.move_to_base(b, inv_perm(path_b))
-                                part_c = self.move_to_base(b, inv_perm(path_c))
+                                part_b = self.move_to_basepoint(
+                                    b, inv_perm(path_b))
+                                part_c = self.move_to_basepoint(
+                                    b, inv_perm(path_c))
 
                                 witness = self.sift(
                                     mult_perm(inv_perm(part_b), part_c))
