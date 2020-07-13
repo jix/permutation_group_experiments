@@ -345,8 +345,11 @@ class Group:
 
     The group is represented using a strong generating set built using a
     configurable variant of the Schreier-Sims algorithm.
+
+    The base parameter specifies a prefix of the base that will be used for the
+    strong generating set. It will be extended automatically as necessary.
     """
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, base=()):
         self.cfg = cfg or Config()
         self.gens = []
         self.gens_complete = True
@@ -360,6 +363,11 @@ class Group:
         self.stab = None
         self.rng = None
         self.blocks = None
+
+        if base:
+            self.basepoint = base[0]
+            self.tree = {self.basepoint: None}
+            self.stab = Group(cfg, base=base[1:])
 
     def stabilizer_chain(self, prefix=None):
         """Return the chain of stabilizer groups as a list.
@@ -392,6 +400,27 @@ class Group:
             return self.gens
         else:
             return self.stab.generators() + self.gens
+
+    def base(self):
+        """Return the base of the strong generating set for this group.
+        """
+        return [stab.basepoint for stab in self.stabilizer_chain()[:-1]]
+
+    def make_non_redundand(self):
+        """Remove redundant points from the base.
+        """
+        if not self.stab:
+            return
+
+        self.stab.make_non_redundand()
+
+        if len(self.tree) == 1:
+            stab = self.stab
+            rng = self.rng
+            self.__dict__.clear()
+            self.__dict__.update(stab.__dict__)
+            self.gens = list(self.gens)
+            self.rng = rng
 
     def add_gen(self, gen):
         """Add a generator to this group.
@@ -525,6 +554,7 @@ class Group:
             self.stab = Group(self.cfg)
 
         self.gens.append((gen, inv_perm(gen)))
+        self.blocks = None
 
         if gen[self.basepoint] == self.basepoint:
             # we can add this generator directly to the stabilizer subgroup
