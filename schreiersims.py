@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 from random import Random
+import copy
 import re
 
 
@@ -423,8 +424,14 @@ class Group:
         # TODO use heuristic to combine these with the existing implementation
 
         base_changed = Group(self.cfg, base)
-        for gen in self.generators():
-            base_changed.add_gen(gen[0])
+        if self.cfg.monte_carlo and self.rng is not None:
+            # If we already have a scrambled rng for this group, reuse it.
+            # There's no need to keep samples from self.rng and from
+            # base_changed.rng independent.
+            base_changed.rng = copy.deepcopy(self.rng)
+        else:
+            for gen in self.generators():
+                base_changed.add_gen(gen[0])
         base_changed.build(known_order=self.order())
 
         return base_changed
