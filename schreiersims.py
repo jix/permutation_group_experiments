@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, List
 from random import Random
 import copy
 import re
@@ -262,6 +262,20 @@ class Config:
     rng: Random = field(default_factory=lambda: Random(0))
 
 
+@dataclass
+class Block:
+    """A block belonging to a block system of a permutation group.
+    """
+
+    # Representative point of the block.
+    #
+    # repr_map[block_repr] == repr_map must hold.
+    block_repr: int
+
+    # A map that sends each point to the unique representative
+    repr_map: List[int]
+
+
 class NotInOrbit(ValueError):
     pass
 
@@ -349,12 +363,18 @@ class Group:
 
     The base parameter specifies a prefix of the base that will be used for the
     strong generating set. It will be extended automatically as necessary.
+
+    The base parameter may also contain Block objects, to insert setwise
+    stabilizers for a block into the chain. Note that this does not check
+    whether the passed block is part of a block system of this group.
     """
     def __init__(self, cfg=None, base=()):
         self.cfg = cfg or Config()
         self.gens = []
         self.gens_complete = True
         self.basepoint = None
+        self.repr_map = None
+        self.block_stabilizer = False
 
         self.tree_gens = []
         self.tree_expand = []
@@ -366,7 +386,13 @@ class Group:
         self.blocks = None
 
         if base:
-            self.basepoint = base[0]
+            if isinstance(base[0], Block):
+                block = base[0]
+                self.basepoint = block.block_repr
+                self.repr_map = block.repr_map
+                self.block_stabilizer = True
+            else:
+                self.basepoint = base[0]
             self.tree = {self.basepoint: None}
             self.stab = Group(cfg, base=base[1:])
 
@@ -402,10 +428,19 @@ class Group:
         else:
             return self.stab.generators() + self.gens
 
+    def first_base_point(self):
+        """Return the point or block stabilized by the first subgroup.
+        """
+        if self.repr_map is None or is_id_perm(self.repr_map):
+            return self.basepoint
+        else:
+            return Block(self.basepoint, self.repr_map)
+
     def base(self):
         """Return the base of the strong generating set for this group.
         """
-        return [stab.basepoint for stab in self.stabilizer_chain()[:-1]]
+        return [
+            stab.first_base_point() for stab in self.stabilizer_chain()[:-1]]
 
     def change_base(self, base):
         """Return a copy of this group using the specified base prefix.
@@ -529,6 +564,9 @@ class Group:
         and if successful recurses in stabilizer subgroup.
         """
 
+        if self.block_stabilizer:
+            raise RuntimeError("deep_sift not implemented for blocks")
+
         if self.basepoint is None:
             return p
 
@@ -554,6 +592,7 @@ class Group:
     def move_to_basepoint(self, a, p=None, trace=None):
         """Apply a product q of tree_gens with q[a] == basepoints to p.
         """
+        a = self.repr_map[a]
         if a not in self.tree:
             raise NotInOrbit("a not in basepoints's orbit")
 
@@ -564,7 +603,7 @@ class Group:
             edge_gen = self.tree_gens[edge_i][edge_pol]
             if trace is not None:
                 trace.extend(self.tree_expand[edge_i][edge_pol])
-            a = edge_gen[a]
+            a = self.repr_map[edge_gen[a]]
             p = mult_perm(p, edge_gen)
             self.cfg.stats.products += 1
 
@@ -583,10 +622,13 @@ class Group:
 
             self.stab = Group(self.cfg)
 
+        if self.repr_map is None:
+            self.repr_map = id_perm(len(gen))
+
         self.gens.append((gen, inv_perm(gen)))
         self.blocks = None
 
-        if gen[self.basepoint] == self.basepoint:
+        if self.repr_map[gen[self.basepoint]] == self.basepoint:
             # we can add this generator directly to the stabilizer subgroup
             self.stab.add_nonmember_gen(gen)
 
@@ -691,7 +733,7 @@ class Group:
 
             for i, gen_pair in enumerate(self.tree_gens):
                 for pol, gen in enumerate(gen_pair):
-                    b = gen[a]
+                    b = self.repr_map[gen[a]]
                     if b in self.tree:
                         continue
 
@@ -713,7 +755,7 @@ class Group:
     def split_generators(self):
         """Split any generator with a non-prime-power sized basepoint orbit.
 
-        Was only used for debugging build_block_stabilizer_chain.
+        Was only used for debugging insert_block_stabilizers.
 
         For every maximal prime power p^i of the orbit size n, add the
         generator g^(n/p^i).
@@ -751,34 +793,28 @@ class Group:
         self.gens = new_gens
         self.rebuild_schreier_tree()
 
-    def build_block_stabilizer_chain(self):
-        """Insert block stabilizer into the chain.
+    def remove_redundand_generators(self):
+        """Removes redundant generators of the strong generating set.
 
-        This inserts groups into the stabilizer chain, so that each group is
-        generated by the following group and a single additional generator.
-        This is realized by first testing for and removing redundand
-        generators. If multiple generators g_1, ..., g_k remain, insert the
-        groups <H, g_1>, <H, g_1, g_2>, ... <H, g_1, ..., g_{k-1}>. Each of
-        these groups stabilizes a block of the following group. The stabilized
-        block is the orbit of basepoint in the smaller group.
+        For each group in the stabilizer chain, it checks each generator in
+        turn and removes it if it's generated by the stabilizer subgroup
+        together with the other generators.
 
-        See also Seress' "Permutation Group Algorithms" 8.2. "general case"
-
-        This construction may fail if the strong generating set is incomplete.
-        In that case an IncompleteStrongGeneratingSet exception containing a
-        missing group element as witness is raised.
-
-        The subgroups are not inserted as objects, but are defined implicitly
-        by taking a prefix of the `gens` field. The corresponding blocks are
-        stored in the `blocks` field.
+        Can raise a IncompleteStrongGeneratingSet exception, but is not
+        guaranteed to do so for an incomplete strong generating set.
         """
         for stab in reversed(self.stabilizer_chain()):
-            stab.build_block_stabilizer_chain_step()
+            stab.remove_redundand_generators_step()
 
-    def build_block_stabilizer_chain_step(self):
-        """Insert block stabilizers for one step in the stabilizer chain.
+    def remove_redundand_generators_step(self):
+        """Removes redundant top-level generators of the strong generating set.
 
-        See build_block_stabilizer_chain for a description.
+        It checks each top-level generator in turn and removes it if it's
+        generated by the stabilizer subgroup together with the other top-level
+        generators.
+
+        Can raise a IncompleteStrongGeneratingSet exception, but is not
+        guaranteed to do so for an incomplete strong generating set.
         """
         if self.basepoint is None:
             return
@@ -793,6 +829,7 @@ class Group:
             if gen_i[self.basepoint] in self.tree:
                 witness = self.sift(gen_i)
                 if is_id_perm(witness):
+                    self.gens_complete = False
                     continue
                 else:
                     raise IncompleteStrongGeneratingSet(
@@ -806,80 +843,107 @@ class Group:
         if require_rebuild:
             self.rebuild_schreier_tree()
 
-        self.blocks = [None]
+    def insert_block_stabilizers(self):
+        """Insert block stabilizer subgroups.
 
-        for i in range(1, len(self.gens)):
-            stab_gens = self.stab.generators() + self.gens[:i]
+        This performs insert_toplevel_block_stabilizer for all groups in the
+        stabilizer chain. This results in a chain where every group is
+        generated by its subgroup and a single additional generator.
+        """
+        current = self
+        while current:
+            current.insert_toplevel_block_stabilizer()
+            current = current.stab
 
-            queue = [self.basepoint]
-            block = set(queue)
+    def insert_toplevel_block_stabilizer(self):
+        """Insert a block stabilizer subgroup directly below this group.
 
-            while queue:
-                a = queue.pop()
-                for g_pair in stab_gens:
-                    for g in g_pair:
-                        b = g[a]
-                        if b not in block:
-                            block.add(b)
-                            queue.append(b)
+        If this group is generated by the stabilizer subgroup and more than a
+        single generator, this will insert a subgroup having the current
+        stabilizer as proper subgroup, such that this group is generated by the
+        new subgroup and a _single_ generator.
 
-            block = frozenset(block)
+        This is used for SGS verification methods that can only verify adding a
+        single generator to an already verified subgroup.
 
-            point_to_block = {a: block for a in block}
+        See also Seress' "Permutation Group Algorithms" 8.2. "general case"
 
-            queue = [block]
-            blocks = set(queue)
-            block_paths = {block: []}
+        This construction may fail if the strong generating set is incomplete.
+        In that case an IncompleteStrongGeneratingSet exception containing a
+        missing group element as witness is raised.
+        """
+        if len(self.gens) < 2:
+            return False
 
-            gens = stab_gens + [self.gens[i]]
+        gens = self.generators()
 
-            while queue:
-                block_a = queue.pop()
-                for g_pair in gens:
-                    for g in g_pair:
-                        block_b = frozenset(g[a] for a in block_a)
-                        for b in block_b:
-                            point_to_block.setdefault(b, block_b)
-                        for b in block_b:
-                            if point_to_block[b] != block_b:
-                                block_c = point_to_block[b]
+        block_stab = Group(cfg=self.cfg)
 
-                                # find v in stab so that path_b'[b] v = basept
-                                # find w in stab so that path_c'[b] w = basept
-                                # v' path_b path_c' w is a witness
+        block_stab.stab = self.stab
+        block_stab.gens_complete = self.gens_complete
+        block_stab.gens = self.gens[:-1]
+        block_stab.basepoint = self.basepoint
+        block_stab.repr_map = self.repr_map
+        block_stab.rebuild_schreier_tree()
 
-                                path_b = block_paths[block_a] + [g]
-                                path_c = block_paths[block_c]
+        self.stab = block_stab
+        self.gens = [self.gens[-1]]
 
-                                self.cfg.stats.products += (
-                                    len(path_b) + len(path_c) - 1)
-                                path_b = mult_perms(path_b)
-                                path_c = mult_perms(path_c)
+        repr_map = [None] * len(self.gens[0][0])
 
-                                saved_gens = self.gens
-                                self.gens = self.gens[:i]
-                                self.rebuild_schreier_tree()
+        base_block = list(self.stab.tree)
+        base_repr = min(base_block)
+        for point in base_block:
+            repr_map[point] = base_repr
 
-                                part_b = self.move_to_basepoint(
-                                    b, inv_perm(path_b))
-                                part_c = self.move_to_basepoint(
-                                    b, inv_perm(path_c))
+        queue = [base_block]
+        block_paths = {base_repr: []}
 
-                                witness = self.sift(
-                                    mult_perm(inv_perm(part_b), part_c))
+        while queue:
+            block_a = queue.pop()
+            repr_a = min(block_a)
+            for g_pair in gens:
+                for g in g_pair:
+                    block_b = list(g[a] for a in block_a)
+                    repr_b = min(block_b)
+                    if repr_map[repr_b] is None:
+                        queue.append(block_b)
+                        block_paths[repr_b] = block_paths[repr_a] + [g]
+                    for b in block_b:
+                        if repr_map[b] not in (None, repr_b):
+                            repr_c = repr_map[b]
 
-                                self.gens = saved_gens
-                                self.rebuild_schreier_tree()
+                            # find v in stab so that path_b'[b] v = basept
+                            # find w in stab so that path_c'[b] w = basept
+                            # v' path_b path_c' w is a witness
 
-                                assert not is_id_perm(witness)
+                            path_b = block_paths[repr_a] + [g]
+                            path_c = block_paths[repr_c]
 
-                                raise IncompleteStrongGeneratingSet(
-                                    'incomplete strong generating set detected'
-                                    ' while checking blocks', witness=witness)
+                            self.cfg.stats.products += (
+                                len(path_b) + len(path_c) - 1)
+                            path_b = mult_perms(path_b)
+                            path_c = mult_perms(path_c)
 
-                        if block_b not in blocks:
-                            blocks.add(block_b)
-                            queue.append(block_b)
-                            block_paths[block_b] = block_paths[block_a] + [g]
+                            part_b = self.move_to_basepoint(
+                                b, inv_perm(path_b))
+                            part_c = self.move_to_basepoint(
+                                b, inv_perm(path_c))
 
-            self.blocks.append((blocks, point_to_block))
+                            witness = self.stab.sift(
+                                mult_perm(inv_perm(part_b), part_c))
+
+                            assert not is_id_perm(witness)
+
+                            raise IncompleteStrongGeneratingSet(
+                                'incomplete strong generating set detected'
+                                ' while checking blocks', witness=witness)
+
+                        repr_map[b] = repr_b
+
+        self.basepoint = base_repr
+        self.repr_map = repr_map
+
+        self.rebuild_schreier_tree()
+
+        return True
