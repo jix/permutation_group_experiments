@@ -227,13 +227,6 @@ class Config:
     # 'deep':  Don't build shallow Schreier trees.
     schreier_tree: Literal['gap', 'halve', 'deep'] = 'gap'
 
-    # Don't keep a list of generators for each stabilizer, instead use the
-    # strong generating set to generate Schreier trees and Schreier generators.
-    #
-    # This is very inefficient when using the deterministic Schreier-Sims
-    # algorithm.
-    incomplete_gens: bool = True
-
     # Apply generators from both sides to sift generators further down the
     # stabilizer chain.
     deep_sift_gens: bool = False
@@ -371,7 +364,6 @@ class Group:
     def __init__(self, cfg=None, base=()):
         self.cfg = cfg or Config()
         self.gens = []
-        self.gens_complete = True
         self.basepoint = None
         self.repr_map = None
         self.block_stabilizer = False
@@ -406,24 +398,13 @@ class Group:
             return prefix
         return self.stab.stabilizer_chain(prefix)
 
-    def strong_generators(self):
-        """Return a strong generating set for this group.
-        """
-        strong_gens = []
-        seen = set()
-        for group in reversed(self.stabilizer_chain()):
-            for gen in group.gens:
-                key = tuple(gen[0])
-                if key in seen:
-                    continue
-                seen.add(key)
-                strong_gens.append(gen)
-        return strong_gens
-
     def generators(self):
         """Return a set of generators for this group.
+
+        When cfg.monte_carlo is False or after successful verification this is
+        a strong generating set.
         """
-        if self.gens_complete or self.stab is None:
+        if self.stab is None:
             return self.gens
         else:
             return self.stab.generators() + self.gens
@@ -625,16 +606,11 @@ class Group:
         if self.repr_map is None:
             self.repr_map = id_perm(len(gen))
 
-        self.gens.append((gen, inv_perm(gen)))
-        self.blocks = None
-
         if self.repr_map[gen[self.basepoint]] == self.basepoint:
             # we can add this generator directly to the stabilizer subgroup
             self.stab.add_nonmember_gen(gen)
-
-            if self.cfg.incomplete_gens:
-                self.gens.pop()
-                self.gens_complete = False
+        else:
+            self.gens.append((gen, inv_perm(gen)))
 
         self.rebuild_schreier_tree()
 
@@ -829,7 +805,6 @@ class Group:
             if gen_i[self.basepoint] in self.tree:
                 witness = self.sift(gen_i)
                 if is_id_perm(witness):
-                    self.gens_complete = False
                     continue
                 else:
                     raise IncompleteStrongGeneratingSet(
@@ -880,7 +855,6 @@ class Group:
         block_stab = Group(cfg=self.cfg)
 
         block_stab.stab = self.stab
-        block_stab.gens_complete = self.gens_complete
         block_stab.gens = self.gens[:-1]
         block_stab.basepoint = self.basepoint
         block_stab.repr_map = self.repr_map
