@@ -361,6 +361,23 @@ class Group:
             self.tree = {self.basepoint: None}
             self.stab = Group(cfg, base=base[1:])
 
+    def copy(self):
+        """Returns a shallow copy of the group sharing the stabilizer chain.
+        """
+        group = copy.copy(self)
+        group.gens = list(self.gens)
+        group.rng = copy.deepcopy(self.rng)
+
+        return group
+
+    def deep_copy(self):
+        """Return a deep copy of the group, not sharing the stabilizer chain.
+        """
+        group = self.copy()
+        if group.stab:
+            group.stab = self.stab.deep_copy()
+        return group
+
     def stabilizer_chain(self, prefix=None):
         """Return the chain of stabilizer groups as a list.
         """
