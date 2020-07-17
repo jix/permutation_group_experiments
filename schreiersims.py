@@ -4,6 +4,10 @@ from random import Random
 import copy
 import re
 import math
+import sys
+
+if sys.version_info < (3, 7):
+    raise RuntimeError('python before version 3.7 is not supported')
 
 
 def check_perm(p):
@@ -147,7 +151,7 @@ def id_perm(n):
 def is_id_perm(p):
     """Return whether p is the identity permutation.
     """
-    return all(i == j for i, j in enumerate(p))
+    return p is None or all(i == j for i, j in enumerate(p))
 
 
 def cycle_perm(n, cycle):
@@ -414,35 +418,6 @@ class Group:
         """
         return [stab.basepoint for stab in self.stabilizer_chain()[:-1]]
 
-    def change_base(self, base):
-        """Return a copy of this group using the specified base prefix.
-
-        Right now it'll just rebuild the strong generating set using the
-        specified base prefix. When using the Monte Carlo variant it will use
-        the known order of this group to turn it into a Las Vegas algorithm.
-        """
-
-        # TODO implement base change by conjugation
-
-        # TODO implement Las Vegas base point transposition algorithm
-
-        # TODO only rebuild the affected subrange when rebuilding
-
-        # TODO use heuristic to combine these with the existing implementation
-
-        base_changed = Group(self.cfg, base)
-        if self.cfg.monte_carlo and self.rng is not None:
-            # If we already have a scrambled rng for this group, reuse it.
-            # There's no need to keep samples from self.rng and from
-            # base_changed.rng independent.
-            base_changed.rng = copy.deepcopy(self.rng)
-        else:
-            for gen in self.generators():
-                base_changed.add_gen(gen[0])
-        base_changed.build(known_order=self.order())
-
-        return base_changed
-
     def make_non_redundand(self):
         """Remove redundant points from the base.
         """
@@ -513,7 +488,7 @@ class Group:
         else:
             return self.sift(gen)
 
-    def sift(self, p, trace=None):
+    def sift(self, p, trace=None, depth=math.inf):
         """Perform sifting on p.
 
         Applies generators to p to fix p[basepoint] = basepoint and if
@@ -523,6 +498,9 @@ class Group:
         each generator is represented as (i, p) where i is the index into
         generators() and p is True if the generator is inverted.
         """
+        if not depth:
+            return None
+
         if self.basepoint is None or p is None:
             return p
 
@@ -531,7 +509,7 @@ class Group:
         except NotInOrbit:
             return p
 
-        return self.stab.sift(p_stab, trace)
+        return self.stab.sift(p_stab, trace, depth=depth - 1)
 
     def deep_sift(self, p):
         """Perform deep sifting on p.
@@ -581,7 +559,7 @@ class Group:
 
         return p
 
-    def add_nonmember_gen(self, gen):
+    def add_nonmember_gen(self, gen, las_vegas=False):
         """Add a generator that is not a member of this group yet.
         """
         if self.basepoint is None:
@@ -596,13 +574,13 @@ class Group:
 
         if gen[self.basepoint] == self.basepoint:
             # we can add this generator directly to the stabilizer subgroup
-            self.stab.add_nonmember_gen(gen)
+            self.stab.add_nonmember_gen(gen, las_vegas)
         else:
             self.gens.append((gen, inv_perm(gen)))
 
         self.rebuild_schreier_tree()
 
-        if self.cfg.monte_carlo:
+        if self.cfg.monte_carlo or las_vegas:
             self.add_random_schreier_gens()
         else:
             self.add_all_schreier_gens()
@@ -985,3 +963,231 @@ class Group:
         self.cfg.stats.products += 1
 
         return mult_perm(stab_sample, inv_perm(traversal_sample))
+
+    def orbit(self, a):
+        """Compute the orbit of a point.
+
+        Returns a dictionary with the orbit points as key and a word that moves
+        a to that orbit point as value.
+        """
+        if a in self.tree:
+            return sorted(self.tree)
+
+        orbit = {a: []}
+        queue = [a]
+
+        gens = self.generators()
+
+        while queue:
+            a = queue.pop()
+            for i, gen in enumerate(gens):
+                for p, g in enumerate(gen):
+                    b = g[a]
+                    if b not in orbit:
+                        orbit[b] = orbit[a] + [(i, bool(p))]
+                        queue.append(b)
+
+        return orbit
+
+    def stabilized_depth(self, a):
+        """Return the depth of the first subgroup that does not move a.
+        """
+        if self.basepoint is None:
+            return 0
+
+        stab_depth = self.stab.stabilized_depth(a)
+
+        if stab_depth == 0:
+            for g, g_inv in self.gens:
+                if g[a] != a:
+                    break
+            else:  # if no generator moved a
+                return 0
+
+        return 1 + stab_depth
+
+    def change_base(self, base):
+        """Change the base to start with the given prefix.
+
+        Often this is much faster than generating a new strong generating set
+        with the given base prefix. Sometimes it may be slower though, more
+        tuning of the involved heuristics might help here.
+        """
+
+        # Inserting redundand base points is free, so we can remove them here
+        # to get better estimates
+        self.make_non_redundand()
+
+        # How many levels are we allowed to regenerate before building the
+        # remaining chain from scratch?
+        budget = len(self.base()) + len(base)
+
+        # Perform a base change that permutes the new base using group elements
+        # to save work
+        w = self.change_base_conjugated(base, budget)
+
+        # Undo the permutation of the new base by conjugating the group
+        self.conjugate(inv_perm(w))
+
+    def change_base_conjugated(self, base, budget):
+        """Change the base to start with a permutation of the given prefix.
+
+        Returns the permutation applied to the base perfix. This permutation
+        will be an element of the group.
+
+        Used to implement change_base.
+        """
+
+        # TODO it would be nice to refactor this into smaller parts that can be
+        # used independently
+
+        # Nothing to do
+        if not base:
+            return
+
+        # Trivial group, rest are redundant base points
+        if self.basepoint is None:
+            group = Group(self.cfg, base)
+            group.rng = self.rng
+            self.__dict__ = group.__dict__
+            return
+
+        # Can we permute the base so that the first basepoint matches?
+        if base[0] in self.tree:
+            w = self.move_to_basepoint(base[0])
+            if w:
+                base = [w[b] for b in base]
+            assert base[0] == self.basepoint
+            w_stab = self.stab.change_base_conjugated(base[1:], budget)
+            self.rebuild_schreier_tree()
+            w = mult_perm(w, w_stab)
+            self.cfg.stats.products += 1
+            return w
+
+        # Is the first base point of the old base redundant?
+        # TODO is this still necessary? do we avoid this in all cases?
+        if len(self.tree) == 1:
+            group = self.stab.copy()
+            group.rng = self.rng
+            self.__dict__ = group.__dict__
+            return self.change_base_conjugated(base)
+
+        # If the first base point of the new base is redundant we can insert it
+        # for free
+        if self.stabilized_depth(base[0]) == 0:
+            group = Group(self.cfg, [base[0]])
+            group.rng, self.rng = self.rng, None
+            self.__dict__, group.__dict__ = group.__dict__, self.__dict__
+            self.stab = group
+            # no need to rebuild schreier tree, this is a redundant basepoint
+            return self.stab.change_base_conjugated(base[1:], budget)
+
+        # Otherwise we need to regenerate at least some levels of the
+        # stabilizer chain
+
+        # We use the known order to be able to do this as a Las Vegas algorithm
+        target_order = self.order()
+
+        # We can reduce the number of levels to regenerate, by permuting the
+        # base. We're going to permute it such that the first basepoint of the
+        # new base is the first one that is stabilized in the old stabilizer
+        # chain.
+        orbit = self.orbit(base[0])
+
+        depth, point, word = min(
+            (self.stabilized_depth(a), a, w) for a, w in orbit.items())
+
+        gens = self.generators()
+
+        w_adjust = mult_perms(gens[i][p] for i, p in word)
+        if word:
+            self.cfg.stats.products += len(word) - 1
+            base = [w_adjust[b] for b in base]
+
+        assert base[0] == point
+
+        # When regenerating all levels up to the point where our new first
+        # basepoint is stabilized, we can also process all following basepoints
+        # that would also be stabilized up to that point.
+        cut = 1
+
+        while cut < len(base) and self.stabilized_depth(base[cut]) <= depth:
+            cut += 1
+
+        full_depth = len(self.stabilizer_chain())
+
+        # keep order, but remove duplicates
+        new_base = list(dict.fromkeys(base[:cut] + self.base()[:depth]))
+        sift_depth = len(new_base)
+
+        # We pay for the levels that we're regenerating that are not part of
+        # our target prefix
+        budget -= sift_depth - cut
+
+        # If we're out of budget, we regenerate all remaining levels
+        if budget < 0:
+            # It seems that we can reduce the number of random samples we need
+            # by keeping the old base as suffix and sifting the old strong
+            # generating set first
+            new_base = list(dict.fromkeys(base + self.base()))
+            group = Group(self.cfg, new_base)
+
+            # Las Vegas sample, sift and add if missing loop:
+            while group.order() < target_order:
+                if gens:
+                    g = gens.pop()[0]
+                else:
+                    g = self.sample()
+                self.cfg.stats.rounds += 1
+                residue = group.sift(g)
+                if not is_id_perm(residue):
+                    group.add_nonmember_gen(residue, las_vegas=True)
+
+            group.rng = self.rng
+            self.__dict__ = group.__dict__
+
+            self.stabilizer_chain()[len(base)].make_non_redundand()
+
+            return w_adjust
+
+        # If we still have budget we only generate some levels and reuse the
+        # suffix of the stabilizer chain that we don't regenerate
+        group = Group(self.cfg, new_base)
+
+        new_chain_part = group.stabilizer_chain()[:-1]
+        new_chain_part[-1].stab = self.stabilizer_chain()[depth]
+
+        for subgroup in reversed(new_chain_part):
+            subgroup.rebuild_schreier_tree()
+
+        # We start by sifting the old strong generators from the part that
+        # we're regenerating, again this seems to be quite effective in
+        # reducing the number of random samples needed.
+        gens = []
+        for subgroup in self.stabilizer_chain()[:depth]:
+            gens.extend(subgroup.gens)
+
+        # Las Vegas sample, sift and add if missing loop:
+        while group.order() < target_order:
+            if gens:
+                g = gens.pop(0)[0]
+            else:
+                g = self.sample(depth)
+            self.cfg.stats.rounds += 1
+            residue = group.sift(g, depth=sift_depth)
+            if not is_id_perm(residue):
+                group.add_nonmember_gen(residue, las_vegas=True)
+
+        group.rng = self.rng
+        self.__dict__ = group.__dict__
+
+        self.stabilizer_chain()[cut].make_non_redundand()
+
+        # This recursive call will quickly shift through the prefix we already
+        # handled and continues after that
+        w = self.change_base_conjugated(base, budget)
+
+        w = mult_perm(w_adjust, w)
+        self.cfg.stats.products += 1
+
+        return w
