@@ -333,6 +333,15 @@ class GroupRng:
         for _ in range(steps):
             self.stir()
 
+    def apply_map(self, f):
+        """Apply a function to every permutation of the rng state.
+
+        Mostly useful if f is a group morphism.
+        """
+
+        self.reservoir = [f(g) for g in self.reservoir]
+        self.accus = [f(g) for g in self.accus]
+
 
 class Group:
     """A permutation group.
@@ -791,3 +800,43 @@ class Group:
 
         if require_rebuild:
             self.rebuild_schreier_tree()
+
+    def apply_map(self, f_perm, f_base):
+        """Apply f_perm to every generator and f_base to every base point.
+
+        The resulting state is only valid if f_perm is a group morphism and if
+        `f_base(b g) = f_base(b) f_perm(g)` for all group elements g and all
+        base points b.
+        """
+
+        if self.basepoint is None:
+            return
+
+        self.stab.apply_map(f_perm, f_base)
+
+        def f_gen(g):
+            g = f_perm(g)
+            return (g, inv_perm(g))
+
+        self.gens = [f_gen(g) for g, g_inv in self.gens]
+        self.basepoint = f_base(self.basepoint)
+
+        # TODO don't rebuild the tree
+        self.rebuild_schreier_tree()
+
+    def conjugate(self, w):
+        """Conjugate this group.
+        """
+        if w is None:
+            return
+
+        w_inv = inv_perm(w)
+
+        def f_perm(g):
+            self.cfg.stats.products += 2
+            return mult_perms((w_inv, g, w))
+
+        def f_base(b):
+            return w[b]
+
+        self.apply_map(f_perm, f_base)
