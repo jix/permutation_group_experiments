@@ -516,7 +516,9 @@ class Group:
         Applies generators to p to fix p[basepoint] = basepoint and if
         successful recurses in stabilizer subgroup.
 
-        When trace is a list, the applied generators are appended to it.
+        When trace is a list, the applied generators are appended to it where
+        each generator is represented as (i, p) where i is the index into
+        generators() and p is True if the generator is inverted.
         """
         if self.basepoint is None or p is None:
             return p
@@ -657,9 +659,9 @@ class Group:
         self.tree_gens = []
         self.tree_expand = []
 
-        for gen in self.generators():
+        for i, gen in enumerate(self.generators()):
             self.tree_gens.append(gen)
-            self.tree_expand.append(([gen[0]], [gen[1]]))
+            self.tree_expand.append(([(i, False)], [(i, True)]))
 
         while True:
             a = self.schreier_tree_bfs()
@@ -670,7 +672,7 @@ class Group:
             trace = []
             new_gen = self.move_to_basepoint(a, trace=trace)
             assert new_gen is not None
-            inv_trace = [inv_perm(g) for g in trace[::-1]]
+            inv_trace = [(i, not p) for i, p in reversed(trace)]
             self.tree_gens.append((inv_perm(new_gen), new_gen))
             self.tree_expand.append((inv_trace, trace))
 
@@ -821,8 +823,12 @@ class Group:
         self.gens = [f_gen(g) for g, g_inv in self.gens]
         self.basepoint = f_base(self.basepoint)
 
-        # TODO don't rebuild the tree
-        self.rebuild_schreier_tree()
+        gens = self.generators()
+
+        extra_tree_gens = self.tree_gens[len(gens):]
+        self.tree_gens = gens + [f_gen(g) for g, g_inv in extra_tree_gens]
+
+        self.tree = {f_base(b): step for b, step in self.tree.items()}
 
     def conjugate(self, w):
         """Conjugate this group.
