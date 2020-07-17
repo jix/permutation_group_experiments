@@ -467,6 +467,8 @@ class Group:
             if self.cfg.monte_carlo:
                 if self.rng is None:
                     self.rng = GroupRng(self.cfg)
+                    for g, g_inv in self.generators():
+                        self.rng.add_gen(g)
                 self.rng.add_gen(gen)
 
             self.add_nonmember_gen(gen)
