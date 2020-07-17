@@ -3,6 +3,7 @@ from typing import Literal
 from random import Random
 import copy
 import re
+import math
 
 
 def check_perm(p):
@@ -958,3 +959,29 @@ class Group:
         self.rebuild_schreier_tree()
 
         return True
+
+    def sample(self, depth=math.inf):
+        """Return a uniform random element or coset representative.
+
+        The depth parameter specifies for which subgroup on the chain a coset
+        representative should be sampled. If it isn't given or points past the
+        last non-trivial subgroup this returns a uniformly sampled group
+        element.
+
+        This is only correct if the strong generating set is complete.
+        """
+        if not depth or self.basepoint is None:
+            return None
+
+        if self.stab is None:
+            stab_sample = None
+        else:
+            stab_sample = self.stab.sample(depth - 1)
+
+        target = self.cfg.rng.choice(sorted(self.tree))
+
+        traversal_sample = self.move_to_basepoint(target)
+
+        self.cfg.stats.products += 1
+
+        return mult_perm(stab_sample, inv_perm(traversal_sample))
