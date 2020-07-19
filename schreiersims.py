@@ -225,7 +225,7 @@ class Stats:
 class Config:
     # Strategy to build shallow Schreier trees.
     #
-    # 'gap':   Use the algorithm implemented by GAP and described in Seress'
+    # 'gap':   Use the algorithm implemented by GAP and described in Seress's
     #          "Permutation Group Algorithms" 4.4.3.
     # 'halve': Variant of 'gap' which adds a generator for the deepest point of
     #          the orbit instead of the first exceeding the threshold.
@@ -685,7 +685,7 @@ class Group:
                     if mode == 'gap' and depth + 1 >= 2 * len(self.tree_gens):
                         # We want a shallow tree, so we break the outer loop to
                         # add a new generator to reach `a` in a single step.
-                        # This is what GAP does, see also Seress' "Permutation
+                        # This is what GAP does, see also Seress's "Permutation
                         # Group Algorithms" 4.4.3
                         return b
 
@@ -849,7 +849,7 @@ class Group:
         efficient when they) verify adding a single generator to an already
         verified subgroup.
 
-        See also Seress' "Permutation Group Algorithms" 8.2. "general case"
+        See also Seress's "Permutation Group Algorithms" 8.2. "general case"
 
         This construction may fail if the strong generating set is incomplete.
         In that case an IncompleteStrongGeneratingSet exception containing a
@@ -926,6 +926,19 @@ class Group:
                         repr_map[b] = repr_b
 
         blocks = sorted(set(repr_map) - set([None]))
+
+        if len(blocks) == 1:
+            residue = self.stab.sift(self.gens[0][0])
+            if not is_id_perm(residue):
+                raise IncompleteStrongGeneratingSet(
+                    'incomplete strong generating set detected'
+                    ' while checking blocks', witness=residue)
+
+            self.stab.rng = self.rng
+            self.__dict__ = self.stab.__dict__
+
+            return self.insert_toplevel_block_stabilizer()
+
         block_names = {block: n + i for i, block in enumerate(blocks)}
 
         def f_perm(g):
@@ -1058,10 +1071,17 @@ class Group:
             if w:
                 base = [w[b] for b in base]
             assert base[0] == self.basepoint
+
+            old_gens = self.generators()
+
             w_stab = self.stab.change_base_conjugated(base[1:], budget)
-            self.rebuild_schreier_tree()
+
+            if self.generators() != old_gens:
+                self.rebuild_schreier_tree()
+
             w = mult_perm(w, w_stab)
-            self.cfg.stats.products += 1
+            if w:
+                self.cfg.stats.products += 1
             return w
 
         # Is the first base point of the old base redundant?
@@ -1191,3 +1211,157 @@ class Group:
         self.cfg.stats.products += 1
 
         return w
+
+    def simss_verify_step(self):
+        """Verifies the strong generating set using Sims's verify routine.
+
+        Assumes stab has a strong generating set, i.e. this needs to be called
+        for every subgroup on the stabilizer chain to verify a strong
+        generating set.
+
+        This follows the description given by Seress in "Permutation Group
+        Algorithms" 8.2.
+        """
+        if not self.gens:
+            return
+
+        if len(self.gens) > 1:
+            # handles only a single additional generator, so we insert block
+            # stabilizers, see insert_toplevel_block_stabilizer
+            group = self.deep_copy()
+            if group.insert_toplevel_block_stabilizer():
+                group.stab.simss_verify_step()
+            group.simss_verify_step()
+            return
+
+        stab = self.stab.deep_copy()
+
+        z, z_inv = self.gens[0]
+        gamma = z_inv[self.basepoint]
+
+        stab.change_base([gamma])
+
+        stab_gamma = stab.stab
+
+        gens = [g for g, g_inv in stab.generators()] + [z_inv]
+
+        z_idx = len(gens) - 1
+        stab_idx = z_idx - len(stab.gens)
+
+        words = {self.basepoint: []}
+        sequence = [self.basepoint]
+        gen_pos = [1] * z_idx + [0]
+
+        gen_idx = z_idx
+
+        while gen_idx < len(gens):
+            if gen_pos[gen_idx] == len(sequence):
+                gen_idx += 1
+                continue
+
+            point = sequence[gen_pos[gen_idx]]
+            gen_pos[gen_idx] += 1
+            gen = gens[gen_idx]
+            next_point = gen[point]
+
+            if next_point not in words:
+                sequence.append(next_point)
+                words[next_point] = words[point] + [gen_idx]
+                gen_idx = 0
+
+        deltas = []
+        u = {}
+        y = {}
+        v = {}
+        gammas = []
+
+        for point in sequence:
+            word = words[point]
+            if not word or word[-1] >= stab_idx:
+                gamma_ij = point
+                if not word or word[-1] == z_idx:
+                    # point is also delta_i
+                    deltas.append(point)
+
+                gammas.append(gamma_ij)
+
+                stab_orbit_repr_prefix = max(
+                    (i + 1 for i, idx in enumerate(word) if idx == z_idx),
+                    default=0)
+
+                prefix = word[:stab_orbit_repr_prefix]
+                suffix = word[stab_orbit_repr_prefix:]
+
+                u_delta_i = mult_perms(gens[i] for i in prefix)
+                y_gamma_ij = mult_perms(gens[i] for i in suffix)
+
+                u_gamma_ij = mult_perm(u_delta_i, y_gamma_ij)
+                self.cfg.stats.products += max(0, len(word) - 1)
+
+                y[gamma_ij] = y_gamma_ij or id_perm(len(z))
+                u[gamma_ij] = u_gamma_ij or id_perm(len(z))
+
+        for gamma_ij in gammas:
+            z_word = words[z[gamma_ij]]
+
+            stab_gamma_orbit_repr_prefix = max(
+                (i + 1 for i, idx in enumerate(z_word) if idx >= stab_idx),
+                default=0)
+
+            prefix = z_word[:stab_gamma_orbit_repr_prefix]
+            suffix = z_word[stab_gamma_orbit_repr_prefix:]
+
+            stab_gamma_orbit_repr = self.basepoint
+            for idx in prefix:
+                stab_gamma_orbit_repr = gens[idx][stab_gamma_orbit_repr]
+
+            v_gamma_ij_z = mult_perm(
+                u[stab_gamma_orbit_repr],
+                mult_perms(gens[i] for i in suffix))
+
+            self.cfg.stats.products += len(suffix)
+
+            v[z[gamma_ij]] = v_gamma_ij_z or id_perm(len(z))
+
+        for gamma_ij in gammas:
+            assert v[z[gamma_ij]][self.basepoint] == z[gamma_ij]
+
+        # because the following two assertions hold, we can skip checking
+        # delta_0 when checking (c)
+        assert deltas[0] == self.basepoint
+        assert u[self.basepoint] == id_perm(len(z))
+
+        # because the following two assertions hold, we automatically check (a)
+        # while checking (c)
+        assert deltas[1] == gamma
+        assert u[gamma] == z_inv
+
+        # check (c), we can skip delta_0
+        for delta_i in deltas[1:]:
+            stab.change_base([delta_i])
+
+            u_delta_i = u[delta_i]
+            u_delta_i_inv = inv_perm(u_delta_i)
+
+            for g, g_inv in stab.stab.generators():
+                g_u_delta_i_inv = mult_perms((
+                    u_delta_i, g, u_delta_i_inv))
+                self.cfg.stats.products += 2
+
+                residue = stab.sift(g_u_delta_i_inv)
+
+                if not is_id_perm(residue):
+                    raise IncompleteStrongGeneratingSet(
+                        "incomplete strong generating set detected"
+                        " during Sims's verification step",
+                        witness=residue)
+
+        # check (b)
+        for gamma_ij in gammas:
+            b = mult_perms((u[gamma_ij], z, inv_perm(v[z[gamma_ij]])))
+            residue = stab.sift(b)
+            if not is_id_perm(residue):
+                raise IncompleteStrongGeneratingSet(
+                    "incomplete strong generating set detected"
+                    " during Sims's verification step",
+                    witness=residue)
