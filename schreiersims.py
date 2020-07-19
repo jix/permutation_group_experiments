@@ -418,13 +418,13 @@ class Group:
         """
         return [stab.basepoint for stab in self.stabilizer_chain()[:-1]]
 
-    def make_non_redundand(self):
+    def remove_redundand_basepoints(self):
         """Remove redundant points from the base.
         """
         if not self.stab:
             return
 
-        self.stab.make_non_redundand()
+        self.stab.remove_redundand_basepoints()
 
         if len(self.tree) == 1:
             stab = self.stab
@@ -1029,7 +1029,7 @@ class Group:
 
         # Inserting redundand base points is free, so we can remove them here
         # to get better estimates
-        self.make_non_redundand()
+        self.remove_redundand_basepoints()
 
         # How many levels are we allowed to regenerate before building the
         # remaining chain from scratch?
@@ -1166,7 +1166,7 @@ class Group:
             group.rng = self.rng
             self.__dict__ = group.__dict__
 
-            self.stabilizer_chain()[len(base)].make_non_redundand()
+            self.stabilizer_chain()[len(base)].remove_redundand_basepoints()
 
             return w_adjust
 
@@ -1201,7 +1201,7 @@ class Group:
         group.rng = self.rng
         self.__dict__ = group.__dict__
 
-        self.stabilizer_chain()[cut].make_non_redundand()
+        self.stabilizer_chain()[cut].remove_redundand_basepoints()
 
         # This recursive call will quickly shift through the prefix we already
         # handled and continues after that
