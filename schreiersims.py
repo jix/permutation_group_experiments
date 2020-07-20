@@ -1,3 +1,20 @@
+"""
+This implements a few variants of the Schreier-Sims algorithm for generating
+strong generating sets of permutation groups.
+
+This was written to explore different variants and trade-offs and gather some
+performance statistics about them. It is not optimized for runtime performance
+at all though! For larger groups, computing group products will dominate the
+runtime, so I could simply count these, without having to optimize anything to
+benchmark different variants.
+
+I do not recommend using this code for anything but exploring implementation
+details of these algorithms. Well tuned implementations of permutation group
+algorithms can be found in the open source GAP computer algebra system
+(gap-system.org). SageMath also contains a Python interface to GAP.
+"""
+
+
 from dataclasses import dataclass, field
 from typing import Literal
 from random import Random
@@ -249,6 +266,14 @@ class Config:
     # Not very effecitve as currently implemented.
     random_schreier_gens: int = 0
 
+    # Which method should be used by the verify method to check whether a
+    # strong generating set is complete.
+    #
+    # 'schreier': Sift all Schreier generators. Slow but simple.
+    # 'sims':     Use Sims's verify routine described by Seress in "Permutation
+    #             Group Algorithms" 8.2.
+    verify: Literal['schreier', 'sims'] = 'sims'
+
     # Parameters for black box random element generation. See GAP's
     # documentation for ProductReplacer.
     rng_accus: int = 5
@@ -257,7 +282,7 @@ class Config:
     rng_scramble_factor: int = 4
 
     stats: Stats = field(default_factory=lambda: Stats())
-    rng: Random = field(default_factory=lambda: Random(0))
+    rng: Random = field(default_factory=lambda: Random())
 
 
 class NotInOrbit(ValueError):
@@ -593,24 +618,6 @@ class Group:
                 p = inv_perm(self.move_to_basepoint(a, inv_gen))
                 schreier_gen = self.move_to_basepoint(p[self.basepoint], p)
                 self.stab.add_gen(schreier_gen)
-
-    def verify_all_schreir_gens(self):
-        """Slow verification by sifting all schreier generators.
-
-        This is performed recursively down the stabilizer chain.
-        Returns True if the strong generating set is complete.
-        """
-        if self.basepoint is None:
-            return True
-
-        for gen, inv_gen in self.generators():
-            for a in sorted(self.tree.keys()):
-                p = inv_perm(self.move_to_basepoint(a, inv_gen))
-                schreier_gen = self.move_to_basepoint(p[self.basepoint], p)
-                if not is_id_perm(self.stab.sift(schreier_gen)):
-                    return False
-
-        return self.stab.verify_all_schreir_gens()
 
     def add_random_schreier_gens(self):
         """Add some random Schreier generators to the stabilizer subgroup.
@@ -1212,6 +1219,67 @@ class Group:
 
         return w
 
+    def verify(self):
+        """Perform a verification for every step of the stabilizer chain.
+
+        Uses the verification method specified in the Config.
+        """
+        if self.cfg.verify == 'schreier':
+            for stab in reversed(self.stabilizer_chain()):
+                self.schreier_verify_step()
+        elif self.cfg.verify == 'sims':
+            group = self.deep_copy()
+            group.remove_redundand_generators()
+            for stab in reversed(group.stabilizer_chain()):
+                group.simss_verify_step()
+        else:
+            raise ValueError(f'unknown verification method {self.cfg.verify}')
+
+    def build_verified(self, known_order=None):
+        """Run the Monte Carlo algorithm until verification succeeds.
+
+        If known_order is passed, no verification is necessary and thus no
+        verification is performed.
+
+        Returns the number of verification failures.
+        """
+        if known_order is not None:
+            self.build(known_order)
+            return 0
+
+        failures = 0
+        self.build()
+        while True:
+            try:
+                self.verify()
+            except IncompleteStrongGeneratingSet as e:
+                failures += 1
+                self.add_nonmember_gen(e.witness)
+                self.build()
+            else:
+                break
+        return failures
+
+    def schreier_verify_step(self):
+        """Slow verification by sifting all Schreier generators.
+
+        Raises an IncompleteStrongGeneratingSet exception if verification
+        fails.
+        """
+        if self.basepoint is None:
+            return True
+
+        for gen, inv_gen in self.generators():
+            for a in sorted(self.tree.keys()):
+                p = inv_perm(self.move_to_basepoint(a, inv_gen))
+                schreier_gen = self.move_to_basepoint(p[self.basepoint], p)
+                residue = self.stab.sift(schreier_gen)
+                if not is_id_perm(residue):
+                    raise IncompleteStrongGeneratingSet(
+                        "incomplete strong generating set detected"
+                        " while sifting Schreier generators",
+                        witness=residue)
+
     def simss_verify_step(self):
         """Verifies the strong generating set using Sims's verify routine.
 
@@ -1221,6 +1289,9 @@ class Group:
 
         This follows the description given by Seress in "Permutation Group
         Algorithms" 8.2.
+
+        Raises an IncompleteStrongGeneratingSet exception if verification
+        fails.
         """
         if not self.gens:
             return
@@ -1229,9 +1300,13 @@ class Group:
             # handles only a single additional generator, so we insert block
             # stabilizers, see insert_toplevel_block_stabilizer
             group = self.deep_copy()
-            if group.insert_toplevel_block_stabilizer():
-                group.stab.simss_verify_step()
-            group.simss_verify_step()
+            try:
+                if group.insert_toplevel_block_stabilizer():
+                    group.stab.simss_verify_step()
+                group.simss_verify_step()
+            except IncompleteStrongGeneratingSet as e:
+                e.witness = e.witness[:len(self.gens[0][0])]
+                raise e
             return
 
         stab = self.stab.deep_copy()
